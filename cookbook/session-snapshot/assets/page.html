@@ -215,7 +215,10 @@ function renderDetail(s) {
     ["directory", code(home(s.cwd))], ["running", code((s.foreground || []).join(" ") || "shell prompt")],
     ["terminal title", s.title], ["status", s.status], ["flagged", s.flagged ? "yes" : null],
     ["split", s.split ? `${s.split.cwd}${s.split.foreground.length ? " · " + s.split.foreground.join(" ") : ""}` : null],
-    ["restores with", code(s.restore || "plain shell")], ["session id", code(s.id)], ["workspace id", code(s.workspaceId)]]))];
+    ["restores with", code(s.restore || "plain shell")],
+    ["split restores with", s.split ? code(s.split.restore || "plain shell") : null],
+    ["split conversation", s.split && s.split.claude ? code(s.split.claude.sid) : null],
+    ["session id", code(s.id)], ["workspace id", code(s.workspaceId)]]))];
 
   if (c) {
     const started = c.started ? when(c.started) : "";

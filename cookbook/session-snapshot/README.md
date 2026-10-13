@@ -10,13 +10,13 @@ Workspaces and sessions pile up, most of them Claude Code agents you are finishe
 
 `snapshot.sh` records every open window before you close anything: per session its workspace, name, directory, the command it is running, its Claude conversation and its last 60 screen lines. It writes them to a JSON file and to an HTML page you can browse, search, and click through to see what each session was, including the conversation's title and messages.
 
-Every session and workspace on that page has a **copy** button. It copies one `restore.sh` line, which recreates the session in a workspace of the same name, in its directory, and types into it what brings it back: `claude --resume <conversation-id>` for a Claude session, the program for anything else, nothing for a plain shell. Because a conversation is resumed by id, several sessions that shared a directory each come back to their own.
+Every session and workspace on that page has a **copy** button. It copies one `restore.sh` line, which recreates the session in a workspace of the same name, in its directory, and types into each pane what brings it back: `claude --resume <conversation-id>` for a Claude session, the program for anything else, nothing for a plain shell. Because a conversation is resumed by id, several sessions that shared a directory each come back to their own, and so do the two panes of a split.
 
 The snapshot closes nothing. You close the sessions yourself, and that kills what runs in them; *Limits* says what does not come back.
 
 ## Requirements
 
-- agterm 0.7.0 or later. `session type --pane`, used to restore a split's right pane, shipped in that release; the rest is older. The split's own directory (`splitCwd`) is read from 0.28.0 on, and earlier versions restore it into the main pane's directory.
+- agterm 0.7.1 or later. `AGTERM_PANE`, which tells a Claude in a split from one in the main pane, shipped in that release, and `session type --pane` in 0.7.0; the rest is older. Two later additions are used when present: the split's own directory (`splitCwd`, 0.28.0), without which a split restores into the main pane's directory, and pane ids in `tree` (0.36.0), without which a split pane promoted to main keeps its old role.
 - `jq`
 - `python3` 3.9 or later, standard library only. The one in macOS's Command Line Tools is enough.
 - Claude Code, only for the conversation part. Without it, sessions restore with their directory and command.
@@ -58,7 +58,7 @@ On the page, click a session to see its details, and press **copy** on a session
 ~/.local/share/agterm/session-snapshot/restore.sh ~/agterm-snapshots/2026-10-13-120000.json --workspace <workspace-id>
 ```
 
-Add `--dry-run` after `restore.sh` to print the commands without running them. A session that is still open is selected rather than created twice. `latest.html` in the snapshot directory always points at the newest page.
+Add `--dry-run` after `restore.sh` to print the commands without running them. Pasting a line twice does not create the session twice: one still open, or already restored from that snapshot, is selected instead, and one whose conversation a running Claude already holds is skipped. `latest.html` in the snapshot directory always points at the newest page.
 
 The details panel also has **copy id** and **copy resume command** (`cd <dir> && claude --resume <id>`), for resuming a conversation in any terminal.
 
@@ -66,13 +66,19 @@ The details panel also has **copy id** and **copy resume command** (`cd <dir> &&
 
 `snapshot.sh` reads `window list` and, for each open window, `tree --window` and `session text --lines 60` per session. `render.py` turns that into the JSON and embeds the JSON in a copy of `assets/page.html`, which builds the page in the browser and loads nothing from the network.
 
-Finding a session's conversation is the part that took the most work. Matching by process name misses too much: an npm install of Claude Code runs as `node`, and an SDK-hosted one runs under its own path. So the snapshot reads Claude Code's own registry instead, `~/.claude/sessions/<pid>.json`, which names the conversation each live Claude process is running. For each live process, `ps eww` reads `AGTERM_SESSION_ID` from its environment, which ties the conversation to its agterm session. For a session where no Claude is running at the moment of the snapshot, two fallbacks follow: a `--resume` or `--session-id` in the session's foreground command, then a transcript file named after the agterm session id, which is what a per-tab wrapper such as the `claude-session-resume` recipe creates. The page says which rule matched. A session with no match lists the five most recent conversations started in its directory, each with its own resume command.
+Finding a session's conversation is the part that took the most work. Matching by process name misses too much: an npm install of Claude Code runs as `node`, an SDK-hosted one runs under its own path, and one started as `caffeinate -i claude` shows the wrapper as the foreground program. So the snapshot reads Claude Code's own registry instead, `~/.claude/sessions/<pid>.json`, which names the conversation each live Claude process is running. For each live process, `ps eww` reads its environment. `AGTERM_SESSION_ID` ties it to the agterm session, but every surface of a session carries that same id, the split, the scratch terminal and overlays included. `AGTERM_PANE` (`left`, `right` or `scratch`, absent in an overlay) says which surface it is. That value is fixed when the shell starts and goes stale when a split pane is promoted to main, so `AGTERM_PANE_ID` is matched against `surfaces[].paneID` from `tree` first. Only the main pane and the split count; scratch and overlay processes are ignored. For a pane where no Claude is running at the moment of the snapshot, two fallbacks follow: a `--resume` or `--session-id` in the pane's foreground command, then, for the main pane, a transcript file named after the agterm session id, which is what a per-tab wrapper such as the `claude-session-resume` recipe creates. The page says which rule matched. A session with no match lists the five most recent conversations started in its directory, each with its own resume command.
 
 Resuming by id, not by `claude --continue`, is what keeps sessions that shared a directory apart: `--continue` picks that directory's newest conversation for all of them.
 
+A pane's restore line is `claude --resume <id>` when a running Claude was found in it, whatever wrapper it ran under. Otherwise it is the foreground command replayed as captured, path included, and a shell counts as a program when it is running a script or `-c`. A transcript found only by the wrapper's naming gives way to whatever other program holds the pane, so a tab that once ran Claude and now runs `make watch` comes back running `make watch`.
+
 `restore.sh` creates the session with `session new --workspace-name --create-workspace --name --cwd` and then types the restore line into its shell with `session type`, rather than passing it as `--command`. Typed into an interactive shell, the line runs with your full `PATH` and aliases. A `--command` value runs under the app's launchd `PATH`, where a Homebrew `claude` is not found.
 
-Everything a snapshot holds can contain secrets, so `snapshot.sh` sets `umask 077` and makes the snapshot directory `0700`. JSON embedded in the page has `<`, `>`, `&` and the two Unicode line separators escaped, so text from a terminal or a conversation cannot break out of the page's script.
+A restored session gets a new id, so after a restore the snapshot's id is never open again and cannot by itself stop a second paste. `restore.sh` keeps each snapshot id and the id it was restored as in `<snapshot>.restored.tsv` beside the snapshot, and selects that session when it is still open. It also skips a session whose conversation a live Claude in `~/.claude/sessions` already holds, wherever that Claude runs.
+
+`session type` sends every byte as a keystroke, and shell quoting does not stop the line editor from acting on a control byte: a `^U` inside a quoted argument still erases the line. A restore line holding any control character is printed for you to run by hand instead of typed.
+
+Everything a snapshot holds can contain secrets, so `snapshot.sh` sets `umask 077` and makes the snapshot directory `0700`. JSON embedded in the page has `<`, `>`, `&` and the two Unicode line separators escaped, so text from a terminal or a conversation cannot break out of the page's script. The copied snippets use absolute, shell-quoted paths, so a snapshot directory with a space in its name pastes intact.
 
 ## Limits
 
@@ -86,8 +92,12 @@ Only open windows are captured, since `tree` reports open windows only. Scratch 
 
 A conversation open in two sessions at once is flagged **shared** on the page. Two Claude processes writing to one conversation interleave its history, so exit one of them.
 
-A split is restored by turning the split on and typing the right pane's command after a one-second wait. On a slow machine the pane may not be ready yet; `restore.sh` then prints the line to run by hand.
+A split is restored by turning the split on and typing the right pane's line after a one-second wait. On a slow machine the pane may not be ready yet; `restore.sh` then prints the line to run by hand.
 
-A command line is re-quoted from its argv, the way `foreground` reports it. A shell function or alias is not a process and is not captured by name.
+A command line is re-quoted from its argv, the way `foreground` reports it. A shell function or alias is not a process and is not captured by name. A line holding a control character is printed rather than typed.
+
+A session whose conversation is running in some other Claude is skipped, not restored. Exit that Claude first if you want the session back here.
+
+The record of what was restored lives beside each snapshot, so restoring from a different snapshot of the same sessions does not know about it and creates them again.
 
 Restore always creates the session in the frontmost window, in the workspace with the saved name, creating that workspace if it is missing.

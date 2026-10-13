@@ -20,15 +20,21 @@ jq -r '.result.windows[] | select(.open) | .id' "$work/windows.json" | while rea
   done
 done
 
-# live Claude Code sessions -> the agterm session they run in, from Claude's own registry rather than by
-# process name: an npm install runs as `node`, an SDK host under its own path
+# live Claude Code sessions -> the agterm session and pane they run in, from Claude's own registry rather
+# than by process name: an npm install runs as `node`, an SDK host under its own path.
+# Every surface of a session shares AGTERM_SESSION_ID; AGTERM_PANE and AGTERM_PANE_ID tell them apart.
 : > "$work/claude.tsv"
 for j in "$HOME"/.claude/sessions/*.json; do
   [ -f "$j" ] || continue
   p=$(jq -r '.pid // empty' "$j")
   if [ -z "$p" ] || ! kill -0 "$p" 2>/dev/null; then continue; fi
-  asid=$(ps eww -p "$p" -o command= | tr ' ' '\n' | sed -n 's/^AGTERM_SESSION_ID=//p')
-  if [ -n "$asid" ]; then printf '%s\t%s\n' "$asid" "$(jq -r .sessionId "$j")" >> "$work/claude.tsv"; fi
+  env=$(ps eww -p "$p" -o command= | tr ' ' '\n')
+  asid=$(sed -n 's/^AGTERM_SESSION_ID=//p' <<< "$env")
+  pane=$(sed -n 's/^AGTERM_PANE=//p' <<< "$env")
+  pane_id=$(sed -n 's/^AGTERM_PANE_ID=//p' <<< "$env")
+  if [ -n "$asid" ]; then
+    printf '%s\t%s\t%s\t%s\n' "$asid" "$pane" "$pane_id" "$(jq -r .sessionId "$j")" >> "$work/claude.tsv"
+  fi
 done
 
 python3 "$here/render.py" "$work" "$dir" "$stamp" "$here/restore.sh"

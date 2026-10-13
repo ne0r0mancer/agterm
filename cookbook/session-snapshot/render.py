@@ -33,11 +33,26 @@ def mtime(path):
     return datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M")
 
 
-live = {}
+LIVE = "running claude process"
+CMDLINE = "claude command line"
+WRAPPER = "transcript named after the agterm session (per-tab wrapper)"
+
+# (agterm session id, AGTERM_PANE, AGTERM_PANE_ID, conversation id) per live Claude process
+live = []
 with open(f"{work}/claude.tsv") as f:
     for line in f:
-        a, s = line.rstrip("\n").split("\t")
-        live[a.upper()] = s.lower()
+        a, pane, pane_id, s = line.rstrip("\n").split("\t")
+        live.append((a.upper(), pane, pane_id.upper(), s.lower()))
+
+
+def live_conversation(sess, role):
+    """The conversation a live Claude runs in this session's `role` pane, left or right. AGTERM_PANE is baked at
+    spawn and goes stale when a split is promoted, so the pane id read back from `surfaces` wins when present."""
+    kinds = {x["paneID"].upper(): x.get("kind") for x in sess.get("surfaces") or [] if x.get("paneID")}
+    for a, pane, pane_id, sid in live:
+        if a == sess["id"].upper() and kinds.get(pane_id, pane) == role:
+            return sid
+    return None
 
 
 def blocks(o):
@@ -99,16 +114,18 @@ def transcript(sid):
     return info
 
 
-def conversation(sess_id, fg):
-    """The session's conversation and how it was matched, or (None, None)."""
+def conversation(sess, role, fg):
+    """The conversation in the session's `role` pane and how it was matched, or (None, None)."""
     found = []
-    if live.get(sess_id.upper()):
-        found.append((live[sess_id.upper()], "running claude process"))
+    sid = live_conversation(sess, role)
+    if sid:
+        found.append((sid, LIVE))
     if prog(fg) == "claude":
         for i, a in enumerate(fg[:-1]):
             if a in ("-r", "--resume", "--session-id") and UUID.match(fg[i + 1]):
-                found.append((fg[i + 1], "claude command line"))
-    found.append((sess_id, "transcript named after the agterm session (per-tab wrapper)"))
+                found.append((fg[i + 1], CMDLINE))
+    if role == "left":
+        found.append((sess["id"], WRAPPER))
     for sid, how in found:
         t = transcript(sid)
         if t:
@@ -145,19 +162,30 @@ def candidates(cwd, n=5):
     return found
 
 
-def restore_line(conv, fg, cwd):
-    """What restore.sh types into the new session: the program it ran, else claude --resume, else nothing."""
+def running(fg):
+    """Whether fg is a program to replay rather than an idle shell. A shell running a script or -c is a program."""
     p = prog(fg)
-    if p and p not in SHELLS and p != "claude":
-        return shlex.join([p] + fg[1:])
-    if conv:
-        line = f"claude --resume {conv['sid']}"
-        return line if not conv["cwd"] or conv["cwd"] == cwd else f"cd {shlex.quote(conv['cwd'])} && {line}"
-    return None
+    if not p or p == "login":
+        return False
+    return p not in SHELLS or any(a == "-c" or not a.startswith("-") for a in fg[1:])
 
 
-snap_file = tilde(f"{out}/{stamp}.json")
-snap = {"stamp": stamp, "created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "file": snap_file,
+def restore_line(conv, matched, fg, here, start):
+    """What restore.sh types into a new pane whose shell opens in `start`: claude --resume when a conversation was
+    found in the pane (a live Claude may sit under a wrapper such as caffeinate), else the program it ran, else
+    nothing. A transcript named after the session only counts when no other program holds the pane."""
+    line, target = None, here
+    if conv and (matched in (LIVE, CMDLINE) or not running(fg)):
+        line, target = f"claude --resume {conv['sid']}", conv["cwd"] or here
+    elif running(fg):
+        line = shlex.join(fg)
+    if target != start:
+        line = f"cd {shlex.quote(target)}" + (f" && {line}" if line else "")
+    return line
+
+
+snap_path = os.path.abspath(f"{out}/{stamp}.json")
+snap = {"stamp": stamp, "created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), "file": tilde(snap_path),
         "windows": [], "sessions": []}
 with open(f"{work}/windows.json") as f:
     windows = json.load(f)["result"]["windows"]
@@ -170,17 +198,17 @@ for w in windows:
     win = {"id": w["id"], "name": w.get("name") or "window", "workspaces": []}
     for ws in tree.get("workspaces", []):
         wsn = {"id": ws["id"], "name": ws.get("name", ""), "sessions": [],
-               "snippet": f"{tilde(restore_bin)} {snap_file} --workspace {ws['id']}"}
+               "snippet": shlex.join([restore_bin, snap_path, "--workspace", ws["id"]])}
         for s in ws.get("sessions", []):
             fg, cwd = s.get("foreground") or [], s.get("cwd") or home
-            conv, matched = conversation(s["id"], fg)
+            conv, matched = conversation(s, "left", fg)
             split = None
             if s.get("hasSplit") or s.get("split"):
                 sfg, scwd = s.get("splitForeground") or [], s.get("splitCwd") or cwd
-                sline = shlex.join(sfg) if sfg and prog(sfg) not in SHELLS else None
-                if scwd != cwd:
-                    sline = f"cd {shlex.quote(scwd)}" + (f" && {sline}" if sline else "")
-                split = {"cwd": scwd, "foreground": sfg, "restore": sline}
+                sconv, smatched = conversation(s, "right", sfg)
+                split = {"cwd": scwd, "foreground": sfg, "matched": smatched,
+                         "claude": sconv and {k: sconv[k] for k in ("sid", "title", "cwd")},
+                         "restore": restore_line(sconv, smatched, sfg, scwd, cwd)}
             try:
                 with open(f"{work}/screen-{s['id']}.txt", errors="replace") as f:
                     screen = f.read().rstrip()
@@ -189,10 +217,10 @@ for w in windows:
             rec = {"id": s["id"], "name": s.get("name", ""), "title": s.get("title"), "workspace": wsn["name"],
                    "workspaceId": ws["id"], "window": win["name"], "cwd": cwd, "foreground": fg,
                    "flagged": bool(s.get("flagged")), "status": s.get("status"), "claude": conv,
-                   "restore": restore_line(conv, fg, cwd), "split": split, "screen": screen, "matched": matched,
+                   "restore": restore_line(conv, matched, fg, cwd, cwd), "split": split, "screen": screen, "matched": matched,
                    "resume": conv and f"cd {shlex.quote(conv['cwd'] or cwd)} && claude --resume {conv['sid']}",
                    "candidates": [] if conv else candidates(cwd),
-                   "snippet": f"{tilde(restore_bin)} {snap_file} {s['id']}"}
+                   "snippet": shlex.join([restore_bin, snap_path, s["id"]])}
             snap["sessions"].append(rec)
             wsn["sessions"].append(rec["id"])
         win["workspaces"].append(wsn)
@@ -200,13 +228,15 @@ for w in windows:
 
 by_conv = collections.defaultdict(list)
 for s in snap["sessions"]:
-    if s["claude"]:
-        by_conv[s["claude"]["sid"]].append(s)
+    label = f"{s['workspace']} / {s['name']}"
+    for c, where in ((s["claude"], label), (s["split"] and s["split"]["claude"], f"{label} (split)")):
+        if c:
+            by_conv[c["sid"]].append((s, where))
 for group in by_conv.values():
-    for s in group:
-        s["sharedWith"] = [f"{o['workspace']} / {o['name']}" for o in group if o is not s]
+    for s, where in group:
+        s.setdefault("sharedWith", []).extend(w for o, w in group if not (o is s and w == where))
 
-with open(f"{out}/{stamp}.json", "w") as f:
+with open(snap_path, "w") as f:
     json.dump(snap, f, indent=1, ensure_ascii=False)
 
 # escaped so nothing in a command line or a conversation can close the <script> it is embedded in
