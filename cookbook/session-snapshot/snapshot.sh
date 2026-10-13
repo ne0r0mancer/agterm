@@ -23,11 +23,24 @@ done
 # live Claude Code sessions -> the agterm session and pane they run in, from Claude's own registry rather
 # than by process name: an npm install runs as `node`, an SDK host under its own path.
 # Every surface of a session shares AGTERM_SESSION_ID; AGTERM_PANE and AGTERM_PANE_ID tell them apart.
+# A headless `claude -p` or SDK child started by a Claude inherits its pane's environment and registers too,
+# so an entry with another registered Claude among its ancestors is not the pane's own conversation.
 : > "$work/claude.tsv"
+pids=" "
 for j in "$HOME"/.claude/sessions/*.json; do
   [ -f "$j" ] || continue
   p=$(jq -r '.pid // empty' "$j")
-  if [ -z "$p" ] || ! kill -0 "$p" 2>/dev/null; then continue; fi
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then pids="$pids$p "; fi
+done
+for j in "$HOME"/.claude/sessions/*.json; do
+  [ -f "$j" ] || continue
+  p=$(jq -r '.pid // empty' "$j")
+  case $pids in *" $p "*) ;; *) continue ;; esac
+  a=$p nested=
+  while a=$(ps -o ppid= -p "$a" | tr -d ' ') && [ -n "$a" ] && [ "$a" -gt 1 ]; do
+    case $pids in *" $a "*) nested=1; break ;; esac
+  done
+  [ -z "$nested" ] || continue
   env=$(ps eww -p "$p" -o command= | tr ' ' '\n')
   asid=$(sed -n 's/^AGTERM_SESSION_ID=//p' <<< "$env")
   pane=$(sed -n 's/^AGTERM_PANE=//p' <<< "$env")

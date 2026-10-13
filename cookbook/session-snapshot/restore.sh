@@ -39,6 +39,7 @@ done)
 # session type sends each byte as a keystroke, and a control byte (^U, ^C, a newline) acts in the line editor
 # whatever the shell quoting around it
 typeable() { [[ ! $1 =~ [[:cntrl:]] ]]; }
+resumed() { sed -n 's/.*claude --resume \([0-9a-fA-F-]\{36\}\).*/\1/p' <<< "$1"; }
 
 for id in $ids; do
   s=$(jq -c --arg id "$id" '.sessions[] | select(.id == $id)' "$snap")
@@ -56,40 +57,52 @@ for id in $ids; do
     echo "${dry:+[dry-run] }already restored, selected: $ws / $name"
     continue
   fi
+  cwd=$(jq -r .cwd <<< "$s")
+  line=$(jq -r '.restore // empty' <<< "$s")
+  has_split=$(jq -r '.split != null' <<< "$s")
+  sline=$(jq -r '.split.restore // empty' <<< "$s")
+  # only a conversation a line actually resumes can collide with a running Claude
+  main_sid=$(resumed "$line")
+  split_sid=$(resumed "$sline")
   busy=
-  for sid in $(jq -r '.claude.sid // empty, .split.claude.sid // empty' <<< "$s"); do
+  for sid in $main_sid $split_sid; do
     if grep -qix "$sid" <<< "$live_sids"; then busy=$sid; fi
   done
   if [ -n "$busy" ]; then
     echo "skipped: $ws / $name, conversation $busy is already running in another Claude"
     continue
   fi
-  cwd=$(jq -r .cwd <<< "$s")
-  line=$(jq -r '.restore // empty' <<< "$s")
+  if [ -n "$split_sid" ] && [ "$split_sid" = "$main_sid" ]; then
+    echo "  split resumes the main pane's conversation, not typed: $sline"
+    sline=
+  fi
+  if [ -n "$line" ] && ! typeable "$line"; then
+    echo "  not typed, it holds control characters; run it by hand: $line"
+    line=
+  fi
+  if [ -n "$sline" ] && ! typeable "$sline"; then
+    echo "  split line not typed, it holds control characters; run it by hand: $sline"
+    sline=
+  fi
   if [ -n "$dry" ]; then
     new=NEW_SESSION
     echo "  would run: $AGTERMCTL session new --workspace-name '$ws' --create-workspace --name '$name' --cwd '$cwd'"
   else
     new=$("$AGTERMCTL" session new --workspace-name "$ws" --create-workspace --name "$name" --cwd "$cwd" --json |
           jq -r .result.id)
-    printf '%s\t%s\n' "$id" "$new" >> "$restored"
-  fi
-  if [ -n "$line" ] && ! typeable "$line"; then
-    echo "  not typed, it holds control characters; run it by hand: $line"
-    line=
   fi
   [ -z "$line" ] || run "$AGTERMCTL" session type --target "$new" "$line"$'\n' > /dev/null
-  if [ "$(jq -r '.split != null' <<< "$s")" = true ]; then
+  if [ "$has_split" = true ]; then
     run "$AGTERMCTL" session split on --target "$new" > /dev/null
-    sline=$(jq -r '.split.restore // empty' <<< "$s")
-    if [ -n "$sline" ] && ! typeable "$sline"; then
-      echo "  split line not typed, it holds control characters; run it by hand: $sline"
-    elif [ -n "$sline" ]; then
+    if [ -n "$sline" ]; then
       # the new pane's shell needs a moment before it takes input
       [ -n "$dry" ] || sleep 1
       run "$AGTERMCTL" session type --target "$new" --pane right "$sline"$'\n' > /dev/null ||
-        echo "  split pane not ready, run by hand: $sline"
+        { echo "  split pane not ready, run by hand: $sline"; sline=; }
     fi
   fi
+  # recorded once the panes are set up, so a run that died halfway restores the session again on retry
+  [ -n "$dry" ] || printf '%s\t%s\n' "$id" "$new" >> "$restored"
+  live_sids=$(printf '%s\n%s\n%s' "$live_sids" "$(resumed "$line")" "$(resumed "$sline")")
   echo "${dry:+[dry-run] }restored: $ws / $name${line:+  ($line)}"
 done
