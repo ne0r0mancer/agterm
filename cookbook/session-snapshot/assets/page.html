@@ -155,7 +155,7 @@ function renderTree() {
   }
   const nc = SNAP.sessions.filter(s => s.claude).length;
   $("#meta").textContent = `${SNAP.created} · ${SNAP.sessions.length} sessions · ${nc} with a Claude conversation`;
-  $("#foot").append("Copy a snippet and paste it into any agterm shell; a session that is still open is selected instead of duplicated. Data: ",
+  $("#foot").append("Copy a snippet and paste it into a bash or zsh shell in agterm; a session that is still open is selected instead of duplicated. Data: ",
     el("code", {}, SNAP.file));
 }
 

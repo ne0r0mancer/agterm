@@ -16,7 +16,7 @@ trap 'rm -rf "$work"' EXIT
 jq -r '.result.windows[] | select(.open) | .id' "$work/windows.json" | while read -r w; do
   "$AGTERMCTL" tree --window "$w" --json > "$work/tree-$w.json"
   jq -r '.result.tree.workspaces[].sessions[].id' "$work/tree-$w.json" | while read -r s; do
-    "$AGTERMCTL" session text --target "$s" --window "$w" --lines 60 > "$work/screen-$s.txt" 2>/dev/null || true
+    "$AGTERMCTL" session text --target "$s" --window "$w" --pane left --lines 60 > "$work/screen-$s.txt" 2>/dev/null || true
   done
 done
 

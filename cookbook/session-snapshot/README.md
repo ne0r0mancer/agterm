@@ -51,7 +51,7 @@ Run from the palette or a chord, the script gets the app's `PATH` rather than yo
 snapshot.sh --open     # snapshot every open window and open the page
 ```
 
-On the page, click a session to see its details, and press **copy** on a session or a workspace to copy its restore line. Paste the line into any agterm shell:
+On the page, click a session to see its details, and press **copy** on a session or a workspace to copy its restore line. Paste the line into a bash or zsh shell in agterm:
 
 ```sh
 ~/.local/share/agterm/session-snapshot/restore.sh ~/agterm-snapshots/2026-10-13-120000.json <session-id>
@@ -60,11 +60,11 @@ On the page, click a session to see its details, and press **copy** on a session
 
 Add `--dry-run` after `restore.sh` to print the commands without running them. Pasting a line twice does not create the session twice: one still open, or already restored from that snapshot, is selected instead, and one whose conversation a running Claude already holds is skipped. `latest.html` in the snapshot directory always points at the newest page.
 
-The details panel also has **copy id** and **copy resume command** (`cd <dir> && claude --resume <id>`), for resuming a conversation in any terminal.
+The details panel also has **copy id** and **copy resume command** (`cd <dir> && claude --resume <id>`), for resuming a conversation from a bash or zsh shell in any terminal.
 
 ## How it works
 
-`snapshot.sh` reads `window list` and, for each open window, `tree --window` and `session text --lines 60` per session. `render.py` turns that into the JSON and embeds the JSON in a copy of `assets/page.html`, which builds the page in the browser and loads nothing from the network.
+`snapshot.sh` reads `window list` and, for each open window, `tree --window` and `session text --pane left --lines 60` per session. `render.py` turns that into the JSON and embeds the JSON in a copy of `assets/page.html`, which builds the page in the browser and loads nothing from the network.
 
 Finding a session's conversation is the part that took the most work. Matching by process name misses too much: an npm install of Claude Code runs as `node`, an SDK-hosted one runs under its own path, and one started as `caffeinate -i claude` shows the wrapper as the foreground program. So the snapshot reads Claude Code's own registry instead, `~/.claude/sessions/<pid>.json`, which names the conversation each live Claude process is running. For each live process, `ps eww` reads its environment. `AGTERM_SESSION_ID` ties it to the agterm session, but every surface of a session carries that same id, the split, the scratch terminal and overlays included. `AGTERM_PANE` (`left`, `right` or `scratch`, absent in an overlay) says which surface it is. That value is fixed when the shell starts and goes stale when a split pane is promoted to main, so `AGTERM_PANE_ID` is matched against `surfaces[].paneID` from `tree` first. Only the main pane and the split count; scratch and overlay processes are ignored. A headless `claude -p` or an SDK agent started by a Claude inherits all of its pane's variables and registers itself as well, so an entry with another registered Claude among its process ancestors is dropped: it is a child of the pane's conversation, not the pane's own. For a pane where no Claude is running at the moment of the snapshot, two fallbacks follow: a `--resume` or `--session-id` in the pane's foreground command, then, for the main pane, a transcript file named after the agterm session id, which is what a per-tab wrapper such as the `claude-session-resume` recipe creates. The page says which rule matched. A session with no match lists the five most recent conversations started in its directory, each with its own resume command.
 
@@ -89,6 +89,10 @@ Everything a snapshot holds can contain secrets, so `snapshot.sh` sets `umask 07
 **A snapshot holds full command lines, the last screen lines of every session and up to 200 messages per Claude conversation**, any of which can include a token or a password. Files are created `0600` in a `0700` directory. Do not commit or share a snapshot, and set `AGT_SNAP_TURNS=0` to keep conversation text out.
 
 Only open windows are captured, since `tree` reports open windows only. Scratch terminals and overlays are not captured.
+
+Use bash or zsh for copied commands and for lines `restore.sh` refuses to type: they are quoted for a POSIX shell, and fish reads a backslash inside single quotes differently. Automatic restore skips lines with control characters or a backslash.
+
+A restored session keeps its snapshot label as a custom name and does not follow later titles or `cd`. Clear the name to get automatic naming back.
 
 A conversation open in two sessions at once is flagged **shared** on the page. Two Claude processes writing to one conversation interleave its history, so exit one of them.
 

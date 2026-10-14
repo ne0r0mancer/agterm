@@ -37,8 +37,8 @@ live_sids=$(for j in "$HOME"/.claude/sessions/*.json; do
 done)
 
 # session type sends each byte as a keystroke, and a control byte (^U, ^C, a newline) acts in the line editor
-# whatever the shell quoting around it
-typeable() { [[ ! $1 =~ [[:cntrl:]] ]]; }
+# whatever the shell quoting around it; a backslash escapes inside fish single quotes, so POSIX quoting breaks there
+typeable() { [[ ! $1 =~ [[:cntrl:]] && $1 != *\\* ]]; }
 resumed() { sed -n 's/.*claude --resume \([0-9a-fA-F-]\{36\}\).*/\1/p' <<< "$1"; }
 
 for id in $ids; do
@@ -77,11 +77,11 @@ for id in $ids; do
     sline=
   fi
   if [ -n "$line" ] && ! typeable "$line"; then
-    echo "  not typed, it holds control characters; run it by hand: $line"
+    echo "  not typed, it holds control characters or a backslash; run it by hand in bash or zsh: $line"
     line=
   fi
   if [ -n "$sline" ] && ! typeable "$sline"; then
-    echo "  split line not typed, it holds control characters; run it by hand: $sline"
+    echo "  split line not typed, it holds control characters or a backslash; run it by hand in bash or zsh: $sline"
     sline=
   fi
   if [ -n "$dry" ]; then
